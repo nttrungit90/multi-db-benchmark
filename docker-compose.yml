@@ -1,0 +1,87 @@
+# ============================================================
+# Resource limits: every database gets identical constraints
+# so benchmarks are fair. Tune via .env or override file.
+# ============================================================
+x-db-resources: &db-resources
+  deploy:
+    resources:
+      limits:
+        cpus: "${DB_CPU_LIMIT:-2.0}"
+        memory: "${DB_MEM_LIMIT:-2G}"
+      reservations:
+        cpus: "${DB_CPU_RESERVE:-1.0}"
+        memory: "${DB_MEM_RESERVE:-1G}"
+
+x-db-network: &db-network
+  networks:
+    - bench-net
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: bench-mysql
+    <<: [*db-resources, *db-network]
+    environment:
+      MYSQL_ROOT_PASSWORD: bench123
+      MYSQL_DATABASE: benchmark
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      retries: 5
+
+  mongodb:
+    image: mongo:7.0
+    container_name: bench-mongodb
+    <<: [*db-resources, *db-network]
+    command: ["mongod", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_SIZE_GB:-0.5}"]
+    ports:
+      - "27018:27017"
+    volumes:
+      - ./data/mongodb:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: bench-backend
+    <<: *db-network
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MONGODB_HOST: mongodb
+      MONGODB_PORT: 27017
+    volumes:
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: "2G"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: bench-frontend
+    <<: *db-network
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+networks:
+  bench-net:
+    driver: bridge
